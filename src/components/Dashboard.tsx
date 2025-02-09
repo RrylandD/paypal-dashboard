@@ -65,10 +65,15 @@ const Dashboard = () => {
   const transactions = useMemo(() => {
     let filteredTransactions = rawTransactions
       .filter(transaction => 
+        // Only include completed transactions
         transaction.status === 'Completed' &&
         transaction.amount !== 0 &&
         !transaction.type.includes('Currency Conversion') &&
         transaction.name !== '' &&
+        // Filter out authorization entries and card deposits
+        !transaction.type.includes('General Authorization') &&
+        !transaction.type.includes('General Card Deposit') &&
+        !transaction.type.includes('Bank Deposit to PP Account') &&
         (selectedMerchant === 'all' || transaction.name === selectedMerchant)
       )
       .map(t => ({
