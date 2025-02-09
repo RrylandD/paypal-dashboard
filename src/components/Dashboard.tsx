@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Line } from 'react-chartjs-2'
 import Papa from 'papaparse'
 import {
@@ -35,8 +35,13 @@ interface Transaction {
   cumulativeAmount: number
 }
 
+interface RawTransaction extends Omit<Transaction, 'date' | 'cumulativeAmount'> {
+  date: string
+}
+
 const Dashboard = () => {
-  const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [rawTransactions, setRawTransactions] = useState<RawTransaction[]>([])
+  const [selectedMerchant, setSelectedMerchant] = useState<string>('all')
   const [isLoading, setIsLoading] = useState(false)
 
   const parseDate = (dateStr: string) => {
@@ -50,31 +55,54 @@ const Dashboard = () => {
     return parseFloat(amountStr.replace(/[,\s]/g, ''))
   }
 
-  const processCSVFile = (file: File): Promise<Transaction[]> => {
+  // Get unique merchant names from transactions
+  const merchants = useMemo(() => {
+    const names = new Set(rawTransactions.map(t => t.name))
+    return ['all', ...Array.from(names)].filter(name => name && name !== '')
+  }, [rawTransactions])
+
+  // Filter and process transactions based on selected merchant
+  const transactions = useMemo(() => {
+    let filteredTransactions = rawTransactions
+      .filter(transaction => 
+        transaction.status === 'Completed' &&
+        transaction.amount !== 0 &&
+        !transaction.type.includes('Currency Conversion') &&
+        transaction.name !== '' &&
+        (selectedMerchant === 'all' || transaction.name === selectedMerchant)
+      )
+      .map(t => ({
+        ...t,
+        date: parseDate(t.date),
+        cumulativeAmount: 0
+      }))
+      .sort((a, b) => a.date.getTime() - b.date.getTime())
+
+    // Calculate cumulative amount
+    let cumulativeAmount = 0
+    return filteredTransactions.map(transaction => {
+      cumulativeAmount += transaction.amount
+      return {
+        ...transaction,
+        cumulativeAmount
+      }
+    })
+  }, [rawTransactions, selectedMerchant])
+
+  const processCSVFile = (file: File): Promise<RawTransaction[]> => {
     return new Promise((resolve, reject) => {
       Papa.parse(file, {
         complete: (results) => {
           const parsedTransactions = results.data
             .slice(1) // Skip header row
             .map((row: any) => ({
-              date: parseDate(row[0]),
+              date: row[0],
               name: row[3],
               type: row[4],
               status: row[5],
               currency: row[6],
-              amount: parseAmount(row[7]),
-              cumulativeAmount: 0 // Will be calculated after combining all files
+              amount: parseAmount(row[7])
             }))
-            .filter((transaction: Transaction) => 
-              // Filter out non-relevant transactions
-              transaction.status === 'Completed' &&
-              transaction.amount !== 0 &&
-              !transaction.type.includes('Currency Conversion') &&
-              !transaction.type.includes('Bank Deposit') &&
-              !transaction.type.includes('General Card Deposit') &&
-              !transaction.type.includes('General Withdrawal') &&
-              transaction.name !== ''
-            )
           resolve(parsedTransactions)
         },
         error: (error) => {
@@ -96,20 +124,10 @@ const Dashboard = () => {
         Array.from(files).map(file => processCSVFile(file))
       )
 
-      // Combine and sort all transactions
-      let cumulativeAmount = 0
-      const combinedTransactions = allTransactions
-        .flat()
-        .sort((a, b) => a.date.getTime() - b.date.getTime())
-        .map(transaction => {
-          cumulativeAmount += transaction.amount
-          return {
-            ...transaction,
-            cumulativeAmount
-          }
-        })
-
-      setTransactions(combinedTransactions)
+      // Combine all transactions
+      const combinedTransactions = allTransactions.flat()
+      setRawTransactions(combinedTransactions)
+      setSelectedMerchant('all') // Reset merchant filter when new files are uploaded
     } catch (error) {
       console.error('Error processing CSV files:', error)
     } finally {
@@ -158,7 +176,9 @@ const Dashboard = () => {
       },
       title: {
         display: true,
-        text: 'Cumulative Transaction Value'
+        text: selectedMerchant === 'all' 
+          ? 'Cumulative Transaction Value' 
+          : `Cumulative Transaction Value - ${selectedMerchant}`
       },
       tooltip: {
         callbacks: {
@@ -231,6 +251,31 @@ const Dashboard = () => {
         </p>
       </div>
 
+      {rawTransactions.length > 0 && (
+        <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="mb-4">
+            <label 
+              htmlFor="merchantFilter" 
+              className="mb-2 block text-sm font-medium text-gray-700"
+            >
+              Filter by Merchant
+            </label>
+            <select
+              id="merchantFilter"
+              value={selectedMerchant}
+              onChange={(e) => setSelectedMerchant(e.target.value)}
+              className="block w-full rounded-lg border border-gray-300 bg-gray-50 p-2.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+            >
+              {merchants.map(merchant => (
+                <option key={merchant} value={merchant}>
+                  {merchant === 'all' ? 'All Merchants' : merchant}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
       {isLoading ? (
         <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
           <p className="text-center text-gray-500">Processing files...</p>
@@ -262,6 +307,7 @@ const Dashboard = () => {
             <div className="mb-4">
               <p className="text-sm text-gray-500">
                 Showing {transactions.length} completed transactions
+                {selectedMerchant !== 'all' && ` for ${selectedMerchant}`}
               </p>
             </div>
             <Line data={chartData} options={chartOptions} />
