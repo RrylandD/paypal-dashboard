@@ -63,7 +63,7 @@ const Dashboard = () => {
 
   // Filter and process transactions based on selected merchant
   const transactions = useMemo(() => {
-    let filteredTransactions = rawTransactions
+    const filteredTransactions = rawTransactions
       .filter(transaction => 
         // Only include completed transactions
         transaction.status === 'Completed' &&
@@ -97,10 +97,10 @@ const Dashboard = () => {
   const processCSVFile = (file: File): Promise<RawTransaction[]> => {
     return new Promise((resolve, reject) => {
       Papa.parse(file, {
-        complete: (results) => {
+        complete: (results: Papa.ParseResult<string[]>) => {
           const parsedTransactions = results.data
             .slice(1) // Skip header row
-            .map((row: any) => ({
+            .map((row: string[]) => ({
               date: row[0],
               name: row[3],
               type: row[4],
@@ -187,7 +187,7 @@ const Dashboard = () => {
       },
       tooltip: {
         callbacks: {
-          label: (context: any) => {
+          label: (context: { dataIndex: number }) => {
             const transaction = transactions[context.dataIndex]
             if (!transaction) return []
             return [
