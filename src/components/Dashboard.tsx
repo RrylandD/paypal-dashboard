@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react'
 import { Line } from 'react-chartjs-2'
 import Papa from 'papaparse'
+import 'chartjs-adapter-date-fns'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -12,7 +13,9 @@ import {
   Title,
   Tooltip,
   Legend,
+  TimeScale,
 } from 'chart.js'
+import MultiSelect from './MultiSelect'
 
 // Register ChartJS components
 ChartJS.register(
@@ -22,7 +25,8 @@ ChartJS.register(
   LineElement,
   Title,
   Tooltip,
-  Legend
+  Legend,
+  TimeScale
 )
 
 interface Transaction {
@@ -39,9 +43,13 @@ interface RawTransaction extends Omit<Transaction, 'date' | 'cumulativeAmount'> 
   date: string
 }
 
+type ViewMode = 'transaction' | 'timeline'
+
 const Dashboard = () => {
   const [rawTransactions, setRawTransactions] = useState<RawTransaction[]>([])
-  const [selectedMerchant, setSelectedMerchant] = useState<string>('all')
+  const [selectedMerchants, setSelectedMerchants] = useState<string[]>(['all'])
+  const [viewMode, setViewMode] = useState<ViewMode>('transaction')
+  const [uploadedFiles, setUploadedFiles] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(false)
 
   const parseDate = (dateStr: string) => {
@@ -58,13 +66,13 @@ const Dashboard = () => {
   // Get unique merchant names from transactions
   const merchants = useMemo(() => {
     const names = new Set(rawTransactions.map(t => t.name))
-    return ['all', ...Array.from(names)].filter(name => name && name !== '')
+    return Array.from(names).filter(name => name && name !== '')
   }, [rawTransactions])
 
   // Filter and process transactions based on selected merchant
   const transactions = useMemo(() => {
     const filteredTransactions = rawTransactions
-      .filter(transaction => 
+      .filter(transaction =>
         // Only include completed transactions
         transaction.status === 'Completed' &&
         transaction.amount !== 0 &&
@@ -74,7 +82,7 @@ const Dashboard = () => {
         !transaction.type.includes('General Authorization') &&
         !transaction.type.includes('General Card Deposit') &&
         !transaction.type.includes('Bank Deposit to PP Account') &&
-        (selectedMerchant === 'all' || transaction.name === selectedMerchant)
+        (selectedMerchants.includes('all') || selectedMerchants.includes(transaction.name))
       )
       .map(t => ({
         ...t,
@@ -92,7 +100,7 @@ const Dashboard = () => {
         cumulativeAmount
       }
     })
-  }, [rawTransactions, selectedMerchant])
+  }, [rawTransactions, selectedMerchants])
 
   const processCSVFile = (file: File): Promise<RawTransaction[]> => {
     return new Promise((resolve, reject) => {
@@ -125,14 +133,16 @@ const Dashboard = () => {
     setIsLoading(true)
     try {
       // Process all files and combine their transactions
+      const fileArray = Array.from(files)
       const allTransactions = await Promise.all(
-        Array.from(files).map(file => processCSVFile(file))
+        fileArray.map(file => processCSVFile(file))
       )
 
       // Combine all transactions
       const combinedTransactions = allTransactions.flat()
       setRawTransactions(combinedTransactions)
-      setSelectedMerchant('all') // Reset merchant filter when new files are uploaded
+      setUploadedFiles(fileArray.map(f => f.name))
+      setSelectedMerchants(['all']) // Reset merchant filter when new files are uploaded
     } catch (error) {
       console.error('Error processing CSV files:', error)
     } finally {
@@ -158,11 +168,19 @@ const Dashboard = () => {
   }
 
   const chartData = {
-    labels: transactions.map(t => formatDate(t.date)),
+    labels: transactions.map(t => t.date), // Pass raw Date objects for 'time' scale, but 'category' scale needs strings usually? Chart.js handles Dates for 'time' scale. For 'category', we might need to format them.
+    // Actually for 'category' scale (Transaction View), we want simple index-based or just label-based.
+    // Ideally we pass formatted strings for labels if 'transaction', and Date objects if 'timeline'.
+    // Let's condition the labels based on viewMode.
     datasets: [
       {
         label: 'Cumulative Value',
-        data: transactions.map(t => t.cumulativeAmount),
+        data: transactions.map(t => {
+          if (viewMode === 'timeline') {
+            return { x: t.date, y: t.cumulativeAmount }
+          }
+          return t.cumulativeAmount
+        }),
         borderColor: 'rgb(59, 130, 246)', // Blue
         backgroundColor: 'rgba(59, 130, 246, 0.1)',
         tension: 0.1,
@@ -173,28 +191,41 @@ const Dashboard = () => {
     ]
   }
 
-  const chartOptions = {
+  // Conditionally set labels only for category/transaction mode
+  if (viewMode === 'transaction') {
+    // @ts-expect-error - ChartJS types are strict about labels, but we're dynamically adjusting
+    chartData.labels = transactions.map(t => formatDate(t.date))
+  } else {
+    // For time scale, we don't strictly *need* labels array if data has x/y, but providing them helps sometimes.
+    // However, if we pass {x,y} points, we don't need top-level labels for the x-axis to work in time scale.
+    // Let's leave labels undefined or empty for timeline to rely on x-values.
+    // @ts-expect-error - ChartJS types are strict about labels
+    chartData.labels = undefined
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const chartOptions: any = {
     responsive: true,
+    maintainAspectRatio: false,
     plugins: {
       legend: {
-        position: 'top' as const,
+        display: false, // Hide legend as requested ("Cumulative view bits")
       },
       title: {
-        display: true,
-        text: selectedMerchant === 'all' 
-          ? 'Cumulative Transaction Value' 
-          : `Cumulative Transaction Value - ${selectedMerchant}`
+        display: false, // Hide title as requested
       },
       tooltip: {
         callbacks: {
-          label: (context: { dataIndex: number }) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          label: (context: any) => {
             const transaction = transactions[context.dataIndex]
             if (!transaction) return []
             return [
               `Cumulative: ${formatCurrency(transaction.cumulativeAmount, transaction.currency)}`,
               `Transaction: ${formatCurrency(transaction.amount, transaction.currency)}`,
               `Name: ${transaction.name}`,
-              `Type: ${transaction.type}`
+              `Type: ${transaction.type}`,
+              `Date: ${formatDate(transaction.date)}`
             ]
           }
         }
@@ -208,9 +239,22 @@ const Dashboard = () => {
         }
       },
       x: {
+        type: viewMode === 'timeline' ? 'time' : 'category',
         title: {
           display: true,
           text: 'Date'
+        },
+        time: viewMode === 'timeline' ? {
+          unit: 'month', // Auto-scaling works well usually, but we can set defaults. Let's rely on auto for now.
+          displayFormats: {
+            day: 'MMM d, yyyy'
+          }
+        } : undefined,
+        ticks: {
+          // For transaction view, we might want to limit ticks if there are too many?
+          // ChartJS auto-skips usually.
+          autoSkip: true,
+          maxTicksLimit: 20
         }
       }
     }
@@ -220,23 +264,23 @@ const Dashboard = () => {
   const totalIncoming = transactions
     .filter(t => t.amount > 0)
     .reduce((sum, t) => sum + t.amount, 0)
-  
+
   const totalOutgoing = Math.abs(
     transactions
       .filter(t => t.amount < 0)
       .reduce((sum, t) => sum + t.amount, 0)
   )
 
-  const netAmount = transactions.length > 0 
-    ? transactions[transactions.length - 1].cumulativeAmount 
+  const netAmount = transactions.length > 0
+    ? transactions[transactions.length - 1].cumulativeAmount
     : 0
 
   return (
     <div className="space-y-6">
       <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
         <div className="mb-4">
-          <label 
-            htmlFor="csvFile" 
+          <label
+            htmlFor="csvFile"
             className="mb-2 block text-sm font-medium text-gray-700"
           >
             Upload PayPal Transaction CSV Files
@@ -254,29 +298,51 @@ const Dashboard = () => {
         <p className="text-sm text-gray-500">
           Upload one or more PayPal transaction history CSV files to visualize your cumulative transaction value
         </p>
+
+        {uploadedFiles.length > 0 && (
+          <div className="mt-4">
+            <h4 className="mb-2 text-sm font-medium text-gray-700">Uploaded Files:</h4>
+            <ul className="list-inside list-disc text-sm text-gray-600">
+              {uploadedFiles.map((file, index) => (
+                <li key={index}>{file}</li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       {rawTransactions.length > 0 && (
         <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="mb-4">
-            <label 
-              htmlFor="merchantFilter" 
-              className="mb-2 block text-sm font-medium text-gray-700"
-            >
-              Filter by Merchant
-            </label>
-            <select
-              id="merchantFilter"
-              value={selectedMerchant}
-              onChange={(e) => setSelectedMerchant(e.target.value)}
-              className="block w-full rounded-lg border border-gray-300 bg-gray-50 p-2.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
-            >
-              {merchants.map(merchant => (
-                <option key={merchant} value={merchant}>
-                  {merchant === 'all' ? 'All Merchants' : merchant}
-                </option>
-              ))}
-            </select>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div className="w-full sm:w-1/2">
+              <MultiSelect
+                options={merchants}
+                selected={selectedMerchants}
+                onChange={setSelectedMerchants}
+                label="Filter by Merchant"
+              />
+            </div>
+
+            <div className="flex items-center space-x-2 rounded-lg border border-gray-200 bg-gray-50 p-1">
+              <button
+                onClick={() => setViewMode('transaction')}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${viewMode === 'transaction'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-gray-600 hover:bg-gray-200'
+                  }`}
+              >
+                Transaction View
+              </button>
+              <button
+                onClick={() => setViewMode('timeline')}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${viewMode === 'timeline'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-gray-600 hover:bg-gray-200'
+                  }`}
+              >
+                Timeline View
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -312,10 +378,16 @@ const Dashboard = () => {
             <div className="mb-4">
               <p className="text-sm text-gray-500">
                 Showing {transactions.length} completed transactions
-                {selectedMerchant !== 'all' && ` for ${selectedMerchant}`}
+                {selectedMerchants.includes('all')
+                  ? ''
+                  : selectedMerchants.length === 1
+                    ? ` for ${selectedMerchants[0]}`
+                    : ` for ${selectedMerchants.length} merchants`}
               </p>
             </div>
-            <Line data={chartData} options={chartOptions} />
+            <div className="h-[600px]">
+              <Line data={chartData} options={chartOptions} />
+            </div>
           </div>
         </div>
       )}
