@@ -50,6 +50,8 @@ const Dashboard = () => {
   const [selectedMerchants, setSelectedMerchants] = useState<string[]>(['all'])
   const [viewMode, setViewMode] = useState<ViewMode>('transaction')
   const [uploadedFiles, setUploadedFiles] = useState<string[]>([])
+  const [startDate, setStartDate] = useState<string>('')
+  const [endDate, setEndDate] = useState<string>('')
   const [isLoading, setIsLoading] = useState(false)
 
   const parseDate = (dateStr: string) => {
@@ -72,23 +74,38 @@ const Dashboard = () => {
   // Filter and process transactions based on selected merchant
   const transactions = useMemo(() => {
     const filteredTransactions = rawTransactions
-      .filter(transaction =>
-        // Only include completed transactions
-        transaction.status === 'Completed' &&
-        transaction.amount !== 0 &&
-        !transaction.type.includes('Currency Conversion') &&
-        transaction.name !== '' &&
-        // Filter out authorization entries and card deposits
-        !transaction.type.includes('General Authorization') &&
-        !transaction.type.includes('General Card Deposit') &&
-        !transaction.type.includes('Bank Deposit to PP Account') &&
-        (selectedMerchants.includes('all') || selectedMerchants.includes(transaction.name))
-      )
       .map(t => ({
         ...t,
         date: parseDate(t.date),
         cumulativeAmount: 0
       }))
+      .filter(transaction => {
+        // Only include completed transactions
+        const isCompleted = transaction.status === 'Completed' &&
+          transaction.amount !== 0 &&
+          !transaction.type.includes('Currency Conversion') &&
+          transaction.name !== '' &&
+          // Filter out authorization entries and card deposits
+          !transaction.type.includes('General Authorization') &&
+          !transaction.type.includes('General Card Deposit') &&
+          !transaction.type.includes('Bank Deposit to PP Account')
+
+        const matchesMerchant = selectedMerchants.includes('all') || selectedMerchants.includes(transaction.name)
+
+        let matchesDate = true
+        if (startDate) {
+          const start = new Date(startDate)
+          start.setHours(0, 0, 0, 0)
+          matchesDate = matchesDate && transaction.date >= start
+        }
+        if (endDate) {
+          const end = new Date(endDate)
+          end.setHours(23, 59, 59, 999)
+          matchesDate = matchesDate && transaction.date <= end
+        }
+
+        return isCompleted && matchesMerchant && matchesDate
+      })
       .sort((a, b) => a.date.getTime() - b.date.getTime())
 
     // Calculate cumulative amount
@@ -100,7 +117,7 @@ const Dashboard = () => {
         cumulativeAmount
       }
     })
-  }, [rawTransactions, selectedMerchants])
+  }, [rawTransactions, selectedMerchants, startDate, endDate])
 
   const processCSVFile = (file: File): Promise<RawTransaction[]> => {
     return new Promise((resolve, reject) => {
@@ -342,6 +359,59 @@ const Dashboard = () => {
               >
                 Timeline View
               </button>
+            </div>
+          </div>
+
+          <div className="mt-6 grid grid-cols-1 gap-4 border-t border-gray-100 pt-6 sm:grid-cols-2">
+            <div>
+              <label htmlFor="startDate" className="mb-2 block text-sm font-medium text-gray-700">
+                Start Date
+              </label>
+              <div className="relative">
+                <input
+                  type="date"
+                  id="startDate"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-gray-50 pl-3 pr-10 py-2.5 text-sm font-medium text-gray-900 shadow-sm transition-all focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setStartDate('')}
+                  disabled={!startDate}
+                  title="Clear Start Date"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-red-500 disabled:invisible disabled:opacity-0"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div>
+              <label htmlFor="endDate" className="mb-2 block text-sm font-medium text-gray-700">
+                End Date
+              </label>
+              <div className="relative">
+                <input
+                  type="date"
+                  id="endDate"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-gray-50 pl-3 pr-10 py-2.5 text-sm font-medium text-gray-900 shadow-sm transition-all focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setEndDate('')}
+                  disabled={!endDate}
+                  title="Clear End Date"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-red-500 disabled:invisible disabled:opacity-0"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
         </div>
